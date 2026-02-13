@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-syne: "Syne", sans-serif;
+  --font-space-mono: "Space Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #f5f3ee;
+  color: #0a0a0f;
+  font-family: var(--font-syne), sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #efecea;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d8d4cd;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #8a8a8f;
+}
+
+/* Bookmark card hover effect */
+.bookmark-card {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.bookmark-card:hover {
+  transform: translateY(-2px);
+}
+
+/* Staggered animation for bookmark list */
+.bookmark-item {
+  opacity: 0;
+  animation: fadeUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.bookmark-item:nth-child(1) { animation-delay: 0ms; }
+.bookmark-item:nth-child(2) { animation-delay: 40ms; }
+.bookmark-item:nth-child(3) { animation-delay: 80ms; }
+.bookmark-item:nth-child(4) { animation-delay: 120ms; }
+.bookmark-item:nth-child(5) { animation-delay: 160ms; }
+.bookmark-item:nth-child(6) { animation-delay: 200ms; }
+.bookmark-item:nth-child(7) { animation-delay: 240ms; }
+.bookmark-item:nth-child(8) { animation-delay: 280ms; }
+.bookmark-item:nth-child(n+9) { animation-delay: 320ms; }
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Realtime pulse indicator */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+.pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Input focus ring */
+input:focus, textarea:focus {
+  outline: none;
+}
+
+/* Delete button animation */
+.delete-btn {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.bookmark-card:hover .delete-btn {
+  opacity: 1;
+}
