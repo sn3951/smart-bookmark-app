@@ -19,13 +19,6 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
   const [isConnected, setIsConnected] = useState(false);
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
-  // Stable ref so realtime callbacks never go stale and never cause channel rebuilds
-  const bookmarksRef = useRef<Bookmark[]>(initialBookmarks);
-
-  // Keep ref in sync with state
-  useEffect(() => {
-    bookmarksRef.current = bookmarks;
-  }, [bookmarks]);
 
   // Cross-tab logout — single source of truth for navigation on SIGNED_OUT
   useEffect(() => {
@@ -37,7 +30,7 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
     return () => subscription.unsubscribe();
   }, [supabase, router]);
 
-  // Stable fetchBookmarks — does NOT go into realtime useEffect deps
+  // fetchBookmarks scoped to this user
   const fetchBookmarks = useCallback(async () => {
     const { data } = await supabase
       .from("bookmarks")
@@ -47,13 +40,14 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
     if (data) setBookmarks(data as Bookmark[]);
   }, [supabase, user.id]);
 
-  // Use a ref so realtime handler can call fetchBookmarks without being a dep
+  // Ref so the realtime handler always calls the latest fetchBookmarks
+  // without it being a dependency that would tear down the channel
   const fetchBookmarksRef = useRef(fetchBookmarks);
   useEffect(() => {
     fetchBookmarksRef.current = fetchBookmarks;
   }, [fetchBookmarks]);
 
-  // Realtime subscription — deps are ONLY supabase + user.id so channel is never torn down unnecessarily
+  // Realtime subscription
   useEffect(() => {
     const channel = supabase
       .channel(`bookmarks-${user.id}`)
@@ -63,22 +57,16 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
           event: "INSERT",
           schema: "public",
           table: "bookmarks",
-          // Filter server-side so only this user's inserts trigger the event
-          filter: `user_id=eq.${user.id}`,
+          // NO filter here — with Supabase RLS enabled, adding a filter on
+          // postgres_changes causes events to be silently dropped because the
+          // payload is always {} and Supabase cannot evaluate the filter.
+          // fetchBookmarks already scopes to user_id, so this is safe.
         },
-        (payload) => {
-          // payload.new may be empty with RLS — use it if available, otherwise refetch
-          if (payload.new && (payload.new as Bookmark).id) {
-            const newBookmark = payload.new as Bookmark;
-            setBookmarks((prev) => {
-              // Deduplicate: the tab that inserted it already added it via handleAdd
-              if (prev.some((b) => b.id === newBookmark.id)) return prev;
-              return [newBookmark, ...prev];
-            });
-          } else {
-            // Fallback: RLS stripped the payload, refetch to get the new row
-            fetchBookmarksRef.current();
-          }
+        () => {
+          // payload.new is always {} with RLS, so always refetch.
+          // The tab that inserted already has it via handleAdd (optimistic),
+          // so the extra fetch is a no-op there (deduped by id).
+          fetchBookmarksRef.current();
         }
       )
       .on(
@@ -87,14 +75,11 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
           event: "DELETE",
           schema: "public",
           table: "bookmarks",
-          filter: `user_id=eq.${user.id}`,
+          // Same — no filter with RLS
         },
-        (payload) => {
-          if (payload.old && (payload.old as Bookmark).id) {
-            setBookmarks((prev) => prev.filter((b) => b.id !== (payload.old as Bookmark).id));
-          } else {
-            fetchBookmarksRef.current();
-          }
+        () => {
+          // payload.old is always {} with RLS, so always refetch
+          fetchBookmarksRef.current();
         }
       )
       .subscribe((status) => {
@@ -104,9 +89,9 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabase, user.id]); // ← fetchBookmarks intentionally excluded via ref pattern
+  }, [supabase, user.id]); // fetchBookmarks excluded intentionally via ref pattern
 
-  // Called immediately by AddBookmarkForm — instant optimistic update on same tab
+  // Instant optimistic update on the tab that added the bookmark
   const handleAdd = useCallback((newBookmark: Bookmark) => {
     setBookmarks((prev) => {
       if (prev.some((b) => b.id === newBookmark.id)) return prev;
