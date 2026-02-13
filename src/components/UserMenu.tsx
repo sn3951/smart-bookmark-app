@@ -1,8 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import Image from "next/image";
 
@@ -15,8 +14,8 @@ export default function UserMenu({ user, displayName }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const router = useRouter();
-  const supabase = createClient();
+  // useMemo prevents creating a new client on every render
+  const supabase = useMemo(() => createClient(), []);
 
   const avatarUrl = user.user_metadata?.avatar_url;
 
@@ -33,9 +32,17 @@ export default function UserMenu({ user, displayName }: UserMenuProps) {
 
   const handleSignOut = async () => {
     setSigningOut(true);
-    await supabase.auth.signOut();
-    router.push("/");
-    router.refresh();
+    // Just call signOut — do NOT manually push to "/".
+    // DashboardClient's onAuthStateChange listener handles the redirect
+    // for BOTH the current tab and all other open tabs.
+    // Manually pushing here races with that listener and causes the "stuck" bug.
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      // If signOut fails, reset so the user can try again
+      console.error("Sign out error:", error);
+      setSigningOut(false);
+    }
+    // On success: onAuthStateChange fires SIGNED_OUT → router.push("/") in DashboardClient
   };
 
   return (
