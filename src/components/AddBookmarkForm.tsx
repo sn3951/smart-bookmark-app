@@ -56,7 +56,12 @@ export default function AddBookmarkForm({ userId, onAdd }: AddBookmarkFormProps)
 
     const { data, error: insertError } = await supabase
       .from("bookmarks")
-      .insert({ user_id: userId, url: finalUrl, title: trimmedTitle, favicon: getFavicon(finalUrl) })
+      .insert({
+        user_id: userId,
+        url: finalUrl,
+        title: trimmedTitle,
+        favicon: getFavicon(finalUrl),
+      })
       .select()
       .single();
 
@@ -67,9 +72,21 @@ export default function AddBookmarkForm({ userId, onAdd }: AddBookmarkFormProps)
       return;
     }
 
-    // Instantly update THIS tab via callback
-    // Other tabs get updated via realtime event
-    onAdd(data as Bookmark);
+    const newBookmark = data as Bookmark;
+
+    // 1. Instant update on THIS tab
+    onAdd(newBookmark);
+
+    // 2. Broadcast to ALL other tabs via Supabase Realtime broadcast.
+    //    This is the key fix — postgres_changes with RLS has empty payloads
+    //    so the other tab never knows what was inserted. Broadcast carries
+    //    the full bookmark object directly, bypassing RLS payload issues.
+    await supabase.channel(`bookmarks-${userId}`).send({
+      type: "broadcast",
+      event: "bookmark-added",
+      payload: newBookmark,
+    });
+
     setUrl("");
     setTitle("");
     setSuccess(true);

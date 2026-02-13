@@ -20,7 +20,7 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
 
-  // Cross-tab logout — single source of truth for navigation on SIGNED_OUT
+  // Cross-tab logout
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_OUT") {
@@ -40,45 +40,32 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
     if (data) setBookmarks(data as Bookmark[]);
   }, [supabase, user.id]);
 
-  // Ref so the realtime handler always calls the latest fetchBookmarks
-  // without it being a dependency that would tear down the channel
   const fetchBookmarksRef = useRef(fetchBookmarks);
   useEffect(() => {
     fetchBookmarksRef.current = fetchBookmarks;
   }, [fetchBookmarks]);
 
-  // Realtime subscription
   useEffect(() => {
     const channel = supabase
       .channel(`bookmarks-${user.id}`)
+      // ── Broadcast: instant cross-tab INSERT sync ──────────────────────────
+      // AddBookmarkForm broadcasts "bookmark-added" after a successful insert.
+      // Every tab (including the sender) receives this and deduplicates by id.
+      // This bypasses the RLS empty-payload problem entirely for INSERT.
+      .on("broadcast", { event: "bookmark-added" }, (payload) => {
+        const newBookmark = payload.payload as Bookmark;
+        setBookmarks((prev) => {
+          if (prev.some((b) => b.id === newBookmark.id)) return prev;
+          return [newBookmark, ...prev];
+        });
+      })
+      // ── postgres_changes: DELETE sync ─────────────────────────────────────
+      // DELETE still uses postgres_changes + refetch (works reliably).
+      // No filter — with RLS the payload is always {}, a filter would drop events.
       .on(
         "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "bookmarks",
-          // NO filter here — with Supabase RLS enabled, adding a filter on
-          // postgres_changes causes events to be silently dropped because the
-          // payload is always {} and Supabase cannot evaluate the filter.
-          // fetchBookmarks already scopes to user_id, so this is safe.
-        },
+        { event: "DELETE", schema: "public", table: "bookmarks" },
         () => {
-          // payload.new is always {} with RLS, so always refetch.
-          // The tab that inserted already has it via handleAdd (optimistic),
-          // so the extra fetch is a no-op there (deduped by id).
-          fetchBookmarksRef.current();
-        }
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "DELETE",
-          schema: "public",
-          table: "bookmarks",
-          // Same — no filter with RLS
-        },
-        () => {
-          // payload.old is always {} with RLS, so always refetch
           fetchBookmarksRef.current();
         }
       )
@@ -89,9 +76,10 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabase, user.id]); // fetchBookmarks excluded intentionally via ref pattern
+  }, [supabase, user.id]);
 
-  // Instant optimistic update on the tab that added the bookmark
+  // Instant optimistic update on the tab that added the bookmark.
+  // The broadcast will also fire on this tab but will be deduped by id.
   const handleAdd = useCallback((newBookmark: Bookmark) => {
     setBookmarks((prev) => {
       if (prev.some((b) => b.id === newBookmark.id)) return prev;
@@ -100,14 +88,12 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
   }, []);
 
   const handleDelete = async (id: string) => {
-    // Optimistic update
     setBookmarks((prev) => prev.filter((b) => b.id !== id));
     const { error } = await supabase
       .from("bookmarks")
       .delete()
       .eq("id", id)
       .eq("user_id", user.id);
-    // Rollback on error
     if (error) fetchBookmarks();
   };
 
