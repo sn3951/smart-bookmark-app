@@ -42,36 +42,21 @@ export default function AddBookmarkForm({ userId, onAdd }: AddBookmarkFormProps)
     const trimmedUrl = url.trim();
     const trimmedTitle = title.trim();
 
-    if (!trimmedUrl) {
-      setError("Please enter a URL.");
-      return;
-    }
+    if (!trimmedUrl) { setError("Please enter a URL."); return; }
 
     const finalUrl =
       trimmedUrl.startsWith("http://") || trimmedUrl.startsWith("https://")
         ? trimmedUrl
         : `https://${trimmedUrl}`;
 
-    if (!isValidUrl(finalUrl)) {
-      setError("Please enter a valid URL.");
-      return;
-    }
-
-    if (!trimmedTitle) {
-      setError("Please enter a title.");
-      return;
-    }
+    if (!isValidUrl(finalUrl)) { setError("Please enter a valid URL."); return; }
+    if (!trimmedTitle) { setError("Please enter a title."); return; }
 
     setLoading(true);
 
     const { data, error: insertError } = await supabase
       .from("bookmarks")
-      .insert({
-        user_id: userId,
-        url: finalUrl,
-        title: trimmedTitle,
-        favicon: getFavicon(finalUrl),
-      })
+      .insert({ user_id: userId, url: finalUrl, title: trimmedTitle, favicon: getFavicon(finalUrl) })
       .select()
       .single();
 
@@ -82,10 +67,9 @@ export default function AddBookmarkForm({ userId, onAdd }: AddBookmarkFormProps)
       return;
     }
 
-    // Immediately update the UI on this page via the callback
-    // The realtime event will handle OTHER open tabs
+    // Instantly update THIS tab via callback
+    // Other tabs get updated via realtime event
     onAdd(data as Bookmark);
-
     setUrl("");
     setTitle("");
     setSuccess(true);
@@ -93,48 +77,33 @@ export default function AddBookmarkForm({ userId, onAdd }: AddBookmarkFormProps)
   };
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="bg-surface border border-border rounded-2xl p-5"
-    >
+    <form onSubmit={handleSubmit} className="bg-surface border border-border rounded-2xl p-5">
       <p className="font-semibold text-sm mb-4 text-muted uppercase tracking-widest font-mono">
         Add Bookmark
       </p>
-
       <div className="space-y-3">
-        <div>
-          <input
-            type="text"
-            placeholder="https://example.com"
-            value={url}
-            onChange={(e) => { setUrl(e.target.value); setError(""); }}
-            className="w-full px-4 py-3 bg-paper border border-border rounded-xl font-mono text-sm placeholder:text-muted/60 focus:border-ink transition-colors"
-            disabled={loading}
-          />
-        </div>
-
-        <div>
-          <input
-            type="text"
-            placeholder="Title (e.g. My Favorite Article)"
-            value={title}
-            onChange={(e) => { setTitle(e.target.value); setError(""); }}
-            className="w-full px-4 py-3 bg-paper border border-border rounded-xl text-sm placeholder:text-muted/60 focus:border-ink transition-colors"
-            disabled={loading}
-          />
-        </div>
-
-        {error && (
-          <p className="text-sm text-red-500 font-mono">{error}</p>
-        )}
-
+        <input
+          type="text"
+          placeholder="https://example.com"
+          value={url}
+          onChange={(e) => { setUrl(e.target.value); setError(""); }}
+          className="w-full px-4 py-3 bg-paper border border-border rounded-xl font-mono text-sm placeholder:text-muted/60 focus:border-ink transition-colors"
+          disabled={loading}
+        />
+        <input
+          type="text"
+          placeholder="Title (e.g. My Favorite Article)"
+          value={title}
+          onChange={(e) => { setTitle(e.target.value); setError(""); }}
+          className="w-full px-4 py-3 bg-paper border border-border rounded-xl text-sm placeholder:text-muted/60 focus:border-ink transition-colors"
+          disabled={loading}
+        />
+        {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
         <button
           type="submit"
           disabled={loading || success}
           className={`w-full py-3 rounded-xl font-semibold text-sm transition-all duration-150 active:scale-[0.99] ${
-            success
-              ? "bg-green-500 text-white"
-              : "bg-accent text-white hover:bg-accent/90"
+            success ? "bg-green-500 text-white" : "bg-accent text-white hover:bg-accent/90"
           } disabled:opacity-60 disabled:cursor-not-allowed`}
         >
           {loading ? (

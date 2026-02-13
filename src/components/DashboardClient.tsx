@@ -14,16 +14,13 @@ interface DashboardClientProps {
   initialBookmarks: Bookmark[];
 }
 
-export default function DashboardClient({
-  user,
-  initialBookmarks,
-}: DashboardClientProps) {
+export default function DashboardClient({ user, initialBookmarks }: DashboardClientProps) {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(initialBookmarks);
   const [isConnected, setIsConnected] = useState(false);
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
 
-  // Listen for auth changes — if session ends on ANY tab, redirect all tabs to home
+  // Cross-tab logout
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_OUT") {
@@ -42,13 +39,16 @@ export default function DashboardClient({
     if (data) setBookmarks(data);
   }, [supabase, user.id]);
 
+  // Realtime subscription
   useEffect(() => {
+    // Set up channel with a unique name per user
     const channel = supabase
-      .channel("bookmarks-realtime")
+      .channel(`bookmarks-${user.id}-${Date.now()}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "bookmarks" },
         () => {
+          // payload.new is empty with RLS — refetch for other tabs
           fetchBookmarks();
         }
       )
@@ -56,21 +56,19 @@ export default function DashboardClient({
         "postgres_changes",
         { event: "DELETE", schema: "public", table: "bookmarks" },
         (payload) => {
-          setBookmarks((prev) =>
-            prev.filter((b) => b.id !== payload.old.id)
-          );
+          setBookmarks((prev) => prev.filter((b) => b.id !== payload.old.id));
         }
       )
       .subscribe((status) => {
-        console.log("Realtime status:", status);
         setIsConnected(status === "SUBSCRIBED");
       });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabase, fetchBookmarks]);
+  }, [supabase, user.id, fetchBookmarks]);
 
+  // Called immediately by AddBookmarkForm — instant update on same tab
   const handleAdd = useCallback((newBookmark: Bookmark) => {
     setBookmarks((prev) => {
       if (prev.some((b) => b.id === newBookmark.id)) return prev;
@@ -106,14 +104,9 @@ export default function DashboardClient({
             </div>
             <span className="font-bold text-lg tracking-tight">Markd</span>
           </div>
-
           <div className="flex items-center gap-4">
             <div className="hidden sm:flex items-center gap-1.5">
-              <div
-                className={`w-1.5 h-1.5 rounded-full ${
-                  isConnected ? "bg-green-500 pulse-dot" : "bg-muted"
-                }`}
-              />
+              <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? "bg-green-500 pulse-dot" : "bg-muted"}`} />
               <span className="font-mono text-xs text-muted">
                 {isConnected ? "Live" : "Connecting..."}
               </span>
@@ -131,9 +124,7 @@ export default function DashboardClient({
           <p className="text-muted text-sm">
             {bookmarks.length === 0
               ? "No bookmarks yet. Add your first one below."
-              : `You have ${bookmarks.length} bookmark${
-                  bookmarks.length === 1 ? "" : "s"
-                } saved.`}
+              : `You have ${bookmarks.length} bookmark${bookmarks.length === 1 ? "" : "s"} saved.`}
           </p>
         </div>
 
@@ -162,9 +153,7 @@ function EmptyState() {
     <div className="border-2 border-dashed border-border rounded-2xl p-12 text-center">
       <div className="text-4xl mb-3">🔖</div>
       <p className="font-semibold text-lg mb-1">Nothing saved yet</p>
-      <p className="text-muted text-sm">
-        Paste a URL above to save your first bookmark.
-      </p>
+      <p className="text-muted text-sm">Paste a URL above to save your first bookmark.</p>
     </div>
   );
 }

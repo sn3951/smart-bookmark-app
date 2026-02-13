@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 
-// Placed in the landing page — listens for login from another tab
 export default function AuthListener() {
-  const supabase = createClient();
+  // useMemo prevents creating a new client on every render
+  const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
 
   useEffect(() => {
@@ -14,9 +14,12 @@ export default function AuthListener() {
       if (event === "SIGNED_IN") {
         router.push("/dashboard");
       }
+      if (event === "SIGNED_OUT") {
+        router.push("/");
+      }
     });
     return () => subscription.unsubscribe();
   }, [supabase, router]);
 
-  return null; // purely logic, no UI
+  return null;
 }

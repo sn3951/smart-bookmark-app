@@ -5,9 +5,7 @@ import AuthListener from "@/components/AuthListener";
 
 export default async function HomePage() {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
 
   if (user) {
     redirect("/dashboard");
@@ -15,10 +13,9 @@ export default async function HomePage() {
 
   return (
     <main className="min-h-screen bg-paper flex flex-col">
-      {/* AuthListener handles cross-tab login redirect */}
+      {/* AuthListener handles cross-tab login/logout */}
       <AuthListener />
 
-      {/* Top bar */}
       <nav className="border-b border-border px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 bg-accent rounded-sm flex items-center justify-center">
@@ -31,7 +28,6 @@ export default async function HomePage() {
         </div>
       </nav>
 
-      {/* Hero */}
       <div className="flex-1 flex items-center justify-center px-6">
         <div className="max-w-2xl w-full">
           <div className="inline-flex items-center gap-2 mb-8 px-3 py-1.5 bg-surface border border-border rounded-full">
