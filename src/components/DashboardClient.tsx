@@ -1,53 +1,72 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
 import type { Bookmark } from "@/types";
 import AddBookmarkForm from "@/components/AddBookmarkForm";
 import BookmarkCard from "@/components/BookmarkCard";
 import UserMenu from "@/components/UserMenu";
+import { useRouter } from "next/navigation";
 
 interface DashboardClientProps {
   user: User;
   initialBookmarks: Bookmark[];
 }
 
-export default function DashboardClient({
-  user,
-  initialBookmarks,
-}: DashboardClientProps) {
+export default function DashboardClient({ user, initialBookmarks }: DashboardClientProps) {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(initialBookmarks);
   const [isConnected, setIsConnected] = useState(false);
-
-  // useMemo ensures the supabase client is NOT recreated on every render
-  // A new client on each render would kill and restart the realtime channel
   const supabase = useMemo(() => createClient(), []);
+  const router = useRouter();
 
+  // Cross-tab logout — single source of truth for navigation on SIGNED_OUT
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") {
+        router.push("/");
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [supabase, router]);
+
+  // fetchBookmarks scoped to this user
   const fetchBookmarks = useCallback(async () => {
     const { data } = await supabase
       .from("bookmarks")
       .select("*")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false });
-
-    if (data) setBookmarks(data);
+    if (data) setBookmarks(data as Bookmark[]);
   }, [supabase, user.id]);
 
+  // Ref so the realtime handler always calls the latest fetchBookmarks
+  // without it being a dependency that would tear down the channel
+  const fetchBookmarksRef = useRef(fetchBookmarks);
+  useEffect(() => {
+    fetchBookmarksRef.current = fetchBookmarks;
+  }, [fetchBookmarks]);
+
+  // Realtime subscription
   useEffect(() => {
     const channel = supabase
-      .channel("bookmarks-realtime")
+      .channel(`bookmarks-${user.id}`)
       .on(
         "postgres_changes",
         {
           event: "INSERT",
           schema: "public",
           table: "bookmarks",
+          // NO filter here — with Supabase RLS enabled, adding a filter on
+          // postgres_changes causes events to be silently dropped because the
+          // payload is always {} and Supabase cannot evaluate the filter.
+          // fetchBookmarks already scopes to user_id, so this is safe.
         },
         () => {
-          // With RLS enabled, payload.new arrives empty {}
-          // So we refetch the full list from the DB instead
-          fetchBookmarks();
+          // payload.new is always {} with RLS, so always refetch.
+          // The tab that inserted already has it via handleAdd (optimistic),
+          // so the extra fetch is a no-op there (deduped by id).
+          fetchBookmarksRef.current();
         }
       )
       .on(
@@ -56,38 +75,40 @@ export default function DashboardClient({
           event: "DELETE",
           schema: "public",
           table: "bookmarks",
+          // Same — no filter with RLS
         },
-        (payload) => {
-          // DELETE payload.old always contains the id even with RLS
-          setBookmarks((prev) =>
-            prev.filter((b) => b.id !== payload.old.id)
-          );
+        () => {
+          // payload.old is always {} with RLS, so always refetch
+          fetchBookmarksRef.current();
         }
       )
       .subscribe((status) => {
-        console.log("Realtime status:", status);
         setIsConnected(status === "SUBSCRIBED");
       });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabase, fetchBookmarks]);
+  }, [supabase, user.id]); // fetchBookmarks excluded intentionally via ref pattern
+
+  // Instant optimistic update on the tab that added the bookmark
+  const handleAdd = useCallback((newBookmark: Bookmark) => {
+    setBookmarks((prev) => {
+      if (prev.some((b) => b.id === newBookmark.id)) return prev;
+      return [newBookmark, ...prev];
+    });
+  }, []);
 
   const handleDelete = async (id: string) => {
-    // Optimistic update — remove instantly from UI
+    // Optimistic update
     setBookmarks((prev) => prev.filter((b) => b.id !== id));
-
     const { error } = await supabase
       .from("bookmarks")
       .delete()
       .eq("id", id)
       .eq("user_id", user.id);
-
-    if (error) {
-      // Revert on error
-      fetchBookmarks();
-    }
+    // Rollback on error
+    if (error) fetchBookmarks();
   };
 
   const displayName =
@@ -100,7 +121,6 @@ export default function DashboardClient({
 
   return (
     <div className="min-h-screen bg-paper flex flex-col">
-      {/* Header */}
       <header className="sticky top-0 z-10 bg-paper/90 backdrop-blur-sm border-b border-border">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -109,28 +129,19 @@ export default function DashboardClient({
             </div>
             <span className="font-bold text-lg tracking-tight">Markd</span>
           </div>
-
           <div className="flex items-center gap-4">
-            {/* Realtime indicator */}
             <div className="hidden sm:flex items-center gap-1.5">
-              <div
-                className={`w-1.5 h-1.5 rounded-full ${
-                  isConnected ? "bg-green-500 pulse-dot" : "bg-muted"
-                }`}
-              />
+              <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? "bg-green-500 pulse-dot" : "bg-muted"}`} />
               <span className="font-mono text-xs text-muted">
                 {isConnected ? "Live" : "Connecting..."}
               </span>
             </div>
-
             <UserMenu user={user} displayName={displayName} />
           </div>
         </div>
       </header>
 
-      {/* Main content */}
       <main className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 py-8">
-        {/* Welcome */}
         <div className="mb-8">
           <h1 className="text-3xl font-extrabold tracking-tight mb-1">
             Hey, {firstName} 👋
@@ -138,16 +149,12 @@ export default function DashboardClient({
           <p className="text-muted text-sm">
             {bookmarks.length === 0
               ? "No bookmarks yet. Add your first one below."
-              : `You have ${bookmarks.length} bookmark${
-                  bookmarks.length === 1 ? "" : "s"
-                } saved.`}
+              : `You have ${bookmarks.length} bookmark${bookmarks.length === 1 ? "" : "s"} saved.`}
           </p>
         </div>
 
-        {/* Add bookmark form */}
-        <AddBookmarkForm userId={user.id} />
+        <AddBookmarkForm userId={user.id} onAdd={handleAdd} />
 
-        {/* Bookmark list */}
         <div className="mt-8">
           {bookmarks.length === 0 ? (
             <EmptyState />
@@ -155,10 +162,7 @@ export default function DashboardClient({
             <div className="space-y-3">
               {bookmarks.map((bookmark) => (
                 <div key={bookmark.id} className="bookmark-item">
-                  <BookmarkCard
-                    bookmark={bookmark}
-                    onDelete={handleDelete}
-                  />
+                  <BookmarkCard bookmark={bookmark} onDelete={handleDelete} />
                 </div>
               ))}
             </div>
@@ -174,9 +178,7 @@ function EmptyState() {
     <div className="border-2 border-dashed border-border rounded-2xl p-12 text-center">
       <div className="text-4xl mb-3">🔖</div>
       <p className="font-semibold text-lg mb-1">Nothing saved yet</p>
-      <p className="text-muted text-sm">
-        Paste a URL above to save your first bookmark.
-      </p>
+      <p className="text-muted text-sm">Paste a URL above to save your first bookmark.</p>
     </div>
   );
 }
