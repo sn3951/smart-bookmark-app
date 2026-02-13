@@ -2,8 +2,8 @@
 
 > A real-time, privacy-first bookmark manager built with Next.js 15, Supabase, and Tailwind CSS.
 
-🔗 **Live URL**: [your-vercel-url.vercel.app](https://your-vercel-url.vercel.app)  
-📦 **Repo**: [github.com/yourusername/smart-bookmark-app](https://github.com/yourusername/smart-bookmark-app)
+🔗 **Live URL**: [smart-bookmark-app-abstrabit.vercel.app](https://smart-bookmark-app-abstrabit.vercel.app/)  
+📦 **Repo**: [github.com/sn3951/smart-bookmark-app](https://github.com/sn3951/smart-bookmark-app)
 
 ---
 
@@ -125,78 +125,222 @@ Open [http://localhost:3000](http://localhost:3000)
 
 ---
 
-## Problems I Ran Into & How I Solved Them
+# Markd — Debugging Log
 
-### 1. Realtime not firing in production
-**Problem**: The Supabase Realtime subscription was set up correctly locally but wasn't triggering in production. Bookmarks added in one tab weren't appearing in another.
-
-**Root cause**: The `bookmarks` table wasn't added to Supabase's realtime publication. By default, new tables aren't included.
-
-**Solution**: Added `ALTER PUBLICATION supabase_realtime ADD TABLE public.bookmarks;` to the schema SQL. This is now documented in `supabase-schema.sql`.
+A record of the real-time sync and auth bugs I ran into while building this app, and exactly how I fixed them.
 
 ---
 
-### 2. Duplicate bookmarks on realtime insert
-**Problem**: When I added a bookmark, it would appear twice — once from the optimistic/server response and once from the realtime INSERT event.
+## The App
 
-**Root cause**: The server-side insert returns the new row, and simultaneously the realtime channel also fires an INSERT event for the same row.
+**Markd** is a bookmark manager built with Next.js 14, Supabase (Auth + Postgres + Realtime), and Tailwind CSS. The core promise is real-time sync — add or delete a bookmark in one tab and it instantly reflects in every other open tab.
 
-**Solution**: Added a deduplication check in the realtime INSERT handler:
+---
+
+## Bug 1 — Login / Logout not syncing across tabs on first load
+
+### What was happening
+
+When a user opened two tabs and logged in on one, the other tab stayed on the login page. Similarly, signing out on one tab left the other stuck on the dashboard. Only a manual refresh would sync the state.
+
+### Root cause
+
+The `AuthListener` component was listening to `onAuthStateChange` and pushing to the correct route, but `UserMenu.handleSignOut` was also calling `router.push("/")` and `router.refresh()` immediately after `supabase.auth.signOut()`. These two navigations raced against each other — the manual push would fire before the auth state change propagated, leaving the current tab stuck mid-redirect.
+
+### The fix
+
+**`UserMenu.tsx`** — Removed all manual navigation from `handleSignOut`. Now it only calls `supabase.auth.signOut()` and lets `DashboardClient`'s `onAuthStateChange` listener be the single source of truth for redirecting. This listener fires on every tab, so both the current tab and all other open tabs navigate correctly.
+
 ```ts
-setBookmarks((prev) => {
-  if (prev.some((b) => b.id === payload.new.id)) return prev; // skip duplicate
-  return [payload.new as Bookmark, ...prev];
-});
+// Before — races with onAuthStateChange
+const handleSignOut = async () => {
+  setSigningOut(true);
+  await supabase.auth.signOut();
+  router.push("/");   // ← This raced with the listener
+  router.refresh();   // ← And this made it worse
+};
+
+// After — let onAuthStateChange handle navigation
+const handleSignOut = async () => {
+  setSigningOut(true);
+  const { error } = await supabase.auth.signOut();
+  if (error) {
+    setSigningOut(false); // Reset on failure so user can retry
+  }
+  // onAuthStateChange fires SIGNED_OUT → router.push("/") in DashboardClient
+};
 ```
 
 ---
 
-### 3. Next.js cookies() async API change
-**Problem**: Next.js 15 made `cookies()` async, which broke the Supabase server client helper that was calling it synchronously.
+## Bug 2 — Realtime channel rebuilding on every bookmark add
 
-**Root cause**: Next.js 15 App Router requires `await cookies()`.
+### What was happening
 
-**Solution**: Updated `server.ts` to `const cookieStore = await cookies()` and made the function `async`.
+After fixing login/logout, live sync was still broken. Adding a bookmark updated the current tab immediately (via optimistic update) but the other tab only reflected it after a manual refresh.
+
+### Root cause
+
+In `DashboardClient`, the `fetchBookmarks` callback was listed as a dependency of the `useEffect` that set up the Supabase realtime channel:
+
+```ts
+useEffect(() => {
+  const channel = supabase.channel(...)
+    .on("postgres_changes", { event: "INSERT" }, () => {
+      fetchBookmarks(); // ← fetchBookmarks in the closure
+    })
+    .subscribe();
+
+  return () => supabase.removeChannel(channel);
+}, [supabase, user.id, fetchBookmarks]); // ← fetchBookmarks here caused the problem
+```
+
+Every time a bookmark was added, `fetchBookmarks` ran → updated state → recreated the `useCallback` reference → triggered this `useEffect` to re-run → **tore down and rebuilt the entire Supabase channel**. The channel was constantly being recycled, so it never stayed subscribed long enough to receive events.
+
+### The fix
+
+Used the **ref pattern** to keep `fetchBookmarks` stable without it being a `useEffect` dependency. The channel setup effect now only depends on `[supabase, user.id]` and is never torn down unnecessarily.
+
+```ts
+const fetchBookmarksRef = useRef(fetchBookmarks);
+useEffect(() => {
+  fetchBookmarksRef.current = fetchBookmarks;
+}, [fetchBookmarks]);
+
+useEffect(() => {
+  const channel = supabase.channel(`bookmarks-${user.id}`)
+    .on("postgres_changes", { event: "INSERT" }, () => {
+      fetchBookmarksRef.current(); // ← ref, not the value itself
+    })
+    .subscribe();
+
+  return () => supabase.removeChannel(channel);
+}, [supabase, user.id]); // ← fetchBookmarks no longer here
+```
 
 ---
 
-### 4. Google OAuth redirect URL mismatch
-**Problem**: After deploying to Vercel, Google OAuth was returning a `redirect_uri_mismatch` error.
+## Bug 3 — Server-side filter on `postgres_changes` silently dropping all events
 
-**Root cause**: I only added `localhost:3000/auth/callback` to Supabase's allowed redirect URLs, not the production Vercel URL.
+### What was happening
 
-**Solution**: Added the production URL (`https://markd.vercel.app/auth/callback`) in both:
-- Supabase Dashboard → Authentication → URL Configuration → Redirect URLs
-- Google Cloud Console → OAuth 2.0 credentials → Authorized redirect URIs
+After fixing the channel rebuild loop, DELETE sync started working but INSERT still didn't reflect in the other tab live.
+
+### Root cause
+
+I had added a server-side filter to the `postgres_changes` subscription to scope events to the current user:
+
+```ts
+.on("postgres_changes", {
+  event: "INSERT",
+  schema: "public",
+  table: "bookmarks",
+  filter: `user_id=eq.${user.id}`, // ← This was the problem
+}, () => { ... })
+```
+
+**Supabase strips all row data from `postgres_changes` payloads when RLS (Row Level Security) is enabled.** The payload arrives as `payload.new = {}`. When you also add a `filter`, Supabase tries to evaluate `user_id=eq.<id>` against that empty object — it can't match — so **the event is silently dropped and the callback never fires at all.**
+
+This affected both INSERT and DELETE events.
+
+### The fix
+
+Removed the `filter` from both `postgres_changes` listeners entirely. Since `fetchBookmarks` already contains `.eq("user_id", user.id)`, it only ever fetches the current user's bookmarks regardless of what triggered the refetch.
+
+```ts
+// Before — filter silently killed events with RLS
+.on("postgres_changes", {
+  event: "INSERT",
+  schema: "public",
+  table: "bookmarks",
+  filter: `user_id=eq.${user.id}`, // ← removed
+}, () => { fetchBookmarksRef.current(); })
+
+// After — no filter, scoping handled inside fetchBookmarks
+.on("postgres_changes", {
+  event: "INSERT",
+  schema: "public",
+  table: "bookmarks",
+}, () => { fetchBookmarksRef.current(); })
+```
 
 ---
 
-### 5. Row Level Security blocking all inserts
-**Problem**: Bookmarks were being inserted but immediately disappearing. The database showed them but the SELECT was returning nothing.
+## Bug 4 — INSERT still not syncing after all of the above
 
-**Root cause**: RLS was enabled but the SELECT policy wasn't created yet — so users could insert but couldn't read back their own data.
+### What was happening
 
-**Solution**: Explicitly created all three RLS policies (SELECT, INSERT, DELETE) scoped to `auth.uid() = user_id` before enabling RLS.
+DELETE was now working perfectly in real-time across tabs. But adding a bookmark still only appeared in the tab that submitted the form.
+
+### Root cause
+
+This was the deepest bug. With RLS enabled, Supabase `postgres_changes` delivers `payload.new = {}` for every INSERT — the actual row data is stripped. The callback fires, `fetchBookmarks()` runs on the listening tab, but the fetch returns the new bookmark... and the other tab's state updates correctly in theory. 
+
+In practice, the issue was that `postgres_changes` for INSERT events with empty payloads and no filter is **unreliable** — Supabase's realtime infrastructure cannot guarantee delivery when it has no row data to route the event. The events were simply not reaching the other tab.
+
+### The fix
+
+Switched INSERT sync to use **Supabase Broadcast** instead of `postgres_changes`. Broadcast is a pure pub/sub mechanism that doesn't involve database row data at all — it bypasses RLS entirely because it's just a message passing system.
+
+**`AddBookmarkForm.tsx`** — After a successful insert, broadcast the new bookmark to all subscribers on the same channel:
+
+```ts
+const { data } = await supabase
+  .from("bookmarks")
+  .insert({ ... })
+  .select()
+  .single();
+
+// 1. Instant update on THIS tab
+onAdd(data as Bookmark);
+
+// 2. Broadcast to ALL other tabs — bypasses RLS payload issue entirely
+await supabase.channel(`bookmarks-${userId}`).send({
+  type: "broadcast",
+  event: "bookmark-added",
+  payload: data,
+});
+```
+
+**`DashboardClient.tsx`** — Listen for the broadcast event and update state, deduplicating by `id` so the sending tab doesn't add the bookmark twice:
+
+```ts
+.on("broadcast", { event: "bookmark-added" }, (payload) => {
+  const newBookmark = payload.payload as Bookmark;
+  setBookmarks((prev) => {
+    if (prev.some((b) => b.id === newBookmark.id)) return prev; // dedupe
+    return [newBookmark, ...prev];
+  });
+})
+```
+
+DELETE continues to use `postgres_changes` + `fetchBookmarks` since it works reliably (the DELETE event fires even with an empty payload, and a refetch is sufficient to remove the item).
 
 ---
 
-## Security
+## Summary
 
-- **Row Level Security (RLS)** is enabled on the `bookmarks` table. Every query is scoped to `auth.uid() = user_id` — users can never access each other's data, even with a valid session token.
-- **Google OAuth only** eliminates password storage and credential stuffing risks entirely.
-- The Supabase **anon key** is safe to expose publicly — it only works within the bounds of RLS policies.
-
----
-
-## What I'd Add Next
-
-- [ ] Search/filter bookmarks
-- [ ] Folder/tag organization
-- [ ] Browser extension for one-click saving
-- [ ] Drag-to-reorder
-- [ ] Auto-fetch page title on URL paste
-- [ ] Import/export as CSV or Netscape bookmarks
+| Bug | Cause | Fix |
+|-----|-------|-----|
+| Login/logout not syncing | `UserMenu` manually navigating in race with `onAuthStateChange` | Removed manual `router.push` from `UserMenu`, let `onAuthStateChange` be sole navigator |
+| Channel rebuilding constantly | `fetchBookmarks` in `useEffect` deps caused channel teardown on every fetch | Ref pattern — `fetchBookmarksRef` keeps callback stable outside deps |
+| Events silently dropped | `postgres_changes` `filter` can't evaluate against empty RLS payloads | Removed all `filter` options from `postgres_changes` listeners |
+| INSERT not syncing cross-tab | `postgres_changes` INSERT delivery unreliable with RLS empty payloads | Switched INSERT to Supabase Broadcast — full payload, no RLS interference |
 
 ---
 
-*Built in 72 hours for a take-home assignment.*
+## Key Takeaway
+
+**Supabase Realtime + RLS = empty payloads.** When RLS is enabled on a table, `postgres_changes` strips all row data from event payloads. This has two consequences:
+
+1. Server-side `filter` options on the subscription **silently stop all events** because the filter can't be evaluated
+2. `payload.new` and `payload.old` are always `{}`, so you can never read the inserted/deleted row from the event itself
+
+The workaround is:
+- For **INSERT**: use Broadcast to send the data yourself after the insert
+- For **DELETE**: use `postgres_changes` without a filter, then refetch (the event fires reliably even with an empty payload)
+- Always scope your data fetches by `user_id` in the query itself, not via channel filters
+
+---
+
+*Built with Next.js · Supabase · Tailwind CSS*
