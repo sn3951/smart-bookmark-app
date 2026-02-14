@@ -5,7 +5,6 @@ import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 
 export default function AuthListener() {
-  // useMemo prevents creating a new client on every render
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
 

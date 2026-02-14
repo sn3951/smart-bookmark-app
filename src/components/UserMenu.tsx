@@ -14,12 +14,10 @@ export default function UserMenu({ user, displayName }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  // useMemo prevents creating a new client on every render
   const supabase = useMemo(() => createClient(), []);
 
   const avatarUrl = user.user_metadata?.avatar_url;
 
-  // Close on outside click
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -32,17 +30,11 @@ export default function UserMenu({ user, displayName }: UserMenuProps) {
 
   const handleSignOut = async () => {
     setSigningOut(true);
-    // Just call signOut — do NOT manually push to "/".
-    // DashboardClient's onAuthStateChange listener handles the redirect
-    // for BOTH the current tab and all other open tabs.
-    // Manually pushing here races with that listener and causes the "stuck" bug.
     const { error } = await supabase.auth.signOut();
     if (error) {
-      // If signOut fails, reset so the user can try again
       console.error("Sign out error:", error);
       setSigningOut(false);
     }
-    // On success: onAuthStateChange fires SIGNED_OUT → router.push("/") in DashboardClient
   };
 
   return (
@@ -51,7 +43,6 @@ export default function UserMenu({ user, displayName }: UserMenuProps) {
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-border bg-surface hover:bg-border/60 transition-colors"
       >
-        {/* Avatar */}
         <div className="w-6 h-6 rounded-full overflow-hidden bg-accent flex items-center justify-center">
           {avatarUrl ? (
             <Image
@@ -84,16 +75,13 @@ export default function UserMenu({ user, displayName }: UserMenuProps) {
         </svg>
       </button>
 
-      {/* Dropdown */}
       {open && (
         <div className="absolute right-0 top-full mt-2 w-48 bg-paper border border-border rounded-xl shadow-lg overflow-hidden z-20 animate-fade-up">
-          {/* User info */}
           <div className="px-4 py-3 border-b border-border">
             <p className="font-semibold text-sm truncate">{displayName}</p>
             <p className="text-muted text-xs truncate">{user.email}</p>
           </div>
 
-          {/* Sign out */}
           <button
             onClick={handleSignOut}
             disabled={signingOut}

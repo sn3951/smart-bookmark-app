@@ -20,7 +20,6 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
 
-  // Cross-tab logout
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_OUT") {
@@ -30,7 +29,6 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
     return () => subscription.unsubscribe();
   }, [supabase, router]);
 
-  // fetchBookmarks scoped to this user
   const fetchBookmarks = useCallback(async () => {
     const { data } = await supabase
       .from("bookmarks")
@@ -48,10 +46,6 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
   useEffect(() => {
     const channel = supabase
       .channel(`bookmarks-${user.id}`)
-      // ── Broadcast: instant cross-tab INSERT sync ──────────────────────────
-      // AddBookmarkForm broadcasts "bookmark-added" after a successful insert.
-      // Every tab (including the sender) receives this and deduplicates by id.
-      // This bypasses the RLS empty-payload problem entirely for INSERT.
       .on("broadcast", { event: "bookmark-added" }, (payload) => {
         const newBookmark = payload.payload as Bookmark;
         setBookmarks((prev) => {
@@ -59,9 +53,6 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
           return [newBookmark, ...prev];
         });
       })
-      // ── postgres_changes: DELETE sync ─────────────────────────────────────
-      // DELETE still uses postgres_changes + refetch (works reliably).
-      // No filter — with RLS the payload is always {}, a filter would drop events.
       .on(
         "postgres_changes",
         { event: "DELETE", schema: "public", table: "bookmarks" },
@@ -78,8 +69,6 @@ export default function DashboardClient({ user, initialBookmarks }: DashboardCli
     };
   }, [supabase, user.id]);
 
-  // Instant optimistic update on the tab that added the bookmark.
-  // The broadcast will also fire on this tab but will be deduped by id.
   const handleAdd = useCallback((newBookmark: Bookmark) => {
     setBookmarks((prev) => {
       if (prev.some((b) => b.id === newBookmark.id)) return prev;

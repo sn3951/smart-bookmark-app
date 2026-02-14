@@ -48,7 +48,6 @@ export default function BookmarkCard({ bookmark, onDelete }: BookmarkCardProps) 
         deleting ? "opacity-50 scale-[0.99]" : ""
       } transition-all duration-200`}
     >
-      {/* Favicon */}
       <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-surface border border-border flex items-center justify-center overflow-hidden">
         {bookmark.favicon && !imgError ? (
           <Image
@@ -67,7 +66,6 @@ export default function BookmarkCard({ bookmark, onDelete }: BookmarkCardProps) 
         )}
       </div>
 
-      {/* Content */}
       <a
         href={bookmark.url}
         target="_blank"
@@ -82,7 +80,6 @@ export default function BookmarkCard({ bookmark, onDelete }: BookmarkCardProps) 
         </p>
       </a>
 
-      {/* Date + Delete */}
       <div className="flex-shrink-0 flex items-center gap-3">
         <span className="hidden sm:block font-mono text-xs text-muted/70">
           {formatDate(bookmark.created_at)}

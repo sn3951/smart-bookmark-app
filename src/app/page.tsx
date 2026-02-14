@@ -13,7 +13,6 @@ export default async function HomePage() {
 
   return (
     <main className="min-h-screen bg-paper flex flex-col">
-      {/* AuthListener handles cross-tab login/logout */}
       <AuthListener />
 
       <nav className="border-b border-border px-6 py-4 flex items-center justify-between">

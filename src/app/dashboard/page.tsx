@@ -14,7 +14,6 @@ export default async function DashboardPage() {
     redirect("/");
   }
 
-  // Fetch initial bookmarks server-side for fast first load
   const { data: bookmarks } = await supabase
     .from("bookmarks")
     .select("*")
